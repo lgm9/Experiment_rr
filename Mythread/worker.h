@@ -9,25 +9,18 @@ class Worker {
     int ID;
     int sockfd;
     char* buf, *key, *value;
-    int num_workers;
-    Payload* pl;
     pthread_t w_thread;
-    std::queue<Payload *> *Main_Q;
-    std::queue<Payload *> Q;
     rocksdb::DB* db;
-    std::mutex* Q_lock;
-    Worker** workers;
     int i;
     inline int parselen();
 
     public:
         pthread_mutex_t *lock;
+        Payload* pl;
         pthread_cond_t *cv;
-        Worker(int, int, pthread_mutex_t*, pthread_cond_t*, rocksdb::DB*, std::mutex*, std::queue<Payload *>*, int, Worker**);
+        Worker(int, int, pthread_mutex_t*, pthread_cond_t*, rocksdb::DB*);
         int work();
         int init();
-        int size();
-        void push(Payload *);
         ~Worker() {
             free(buf);
         }

@@ -1,7 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <algorithm>
 #include <string>
 #include <pthread.h>
 #include <sys/types.h>
@@ -13,16 +12,12 @@
 #include "rocksdb/db.h"
 #define BUF_SIZE 128
 
-Worker::Worker(int n_ID, int fd, pthread_mutex_t* inlock, pthread_cond_t* cond, rocksdb::DB* indb, std::mutex* inmut, std::queue<Payload *>* inQ, int n_w, Worker** in_w) {
+Worker::Worker(int n_ID, int fd, pthread_mutex_t* inlock, pthread_cond_t* cond, rocksdb::DB* indb) {
     ID = n_ID;
     sockfd = fd;
     lock = inlock;
     cv = cond;
     db = indb;
-    Q_lock = inmut;
-    Main_Q = inQ;
-    num_workers = n_w;
-    workers = in_w;
     pl = NULL;
 }
 
@@ -47,12 +42,11 @@ inline int Worker::parselen() {
 
 int Worker::work() {
     while(1) {
-        if(pl != NULL) {
-        /*
-        while(Q.size()) {  
-            pl = Q.front();
-            Q.pop();
-            */
+        if(pl == NULL) {
+            pthread_mutex_lock(lock);
+            pthread_cond_wait(cv, lock);
+            pthread_mutex_unlock(lock);
+        }
             if(parselen()) {
                 rocksdb::Status status = db->Put(rocksdb::WriteOptions(), key, value);
                 assert(status.ok());
@@ -77,56 +71,14 @@ int Worker::work() {
                 }
                 sendto(sockfd, buf, strlen(buf), 0, (struct sockaddr*)&(pl -> addr), sizeof(pl -> addr));
             }
-            //printf("DELETE PL %d : %p\n", ID, pl);
             delete(pl);
             pl = NULL;
-        }
-        if(Q_lock->try_lock()) {
-            /*
-            if(Q.empty()) {
-                bool end = Main_Q -> empty();
-                while(!end) {
-                    int minval = workers[0] -> size();
-                    for(int i = 1 ; i < num_workers ; i++) 
-                        minval = std::min(minval, workers[i] -> size());
-                    for(int i = 0 ; i < num_workers ; i++) {
-                        if(workers[i] -> size() <= minval) {
-                            if(i == ID) Q.push(Main_Q -> front());
-                            else workers[i] -> push(Main_Q -> front());
-                            Main_Q -> pop();
-                            if(Main_Q -> empty()) {
-                                end = 1;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            */
-            if(pl == NULL) {
-                for(int i = 0 ; i < num_workers ; i++) {
-                    if(workers[i] -> pl == NULL) {
-                        if(Main_Q -> empty()) break;
-                        workers[i] -> pl = Main_Q -> front();
-                        Main_Q -> pop();
-                    }
-                }
-            }
-            Q_lock -> unlock();
-        }
-        /*
-        else {
-            pthread_mutex_lock(lock);
-            pthread_cond_wait(cv, lock);
-            pthread_mutex_unlock(lock);
-        }
-        */
     }
     return 0;
 }
 
-void Worker::push(Payload* in_pl) {
-    Q.push(in_pl);
+void Worker::push(Payload *pl) {
+    Q.push(pl);
 }
 
 int Worker::init() {
@@ -135,10 +87,6 @@ int Worker::init() {
         printf("Thread not created\n");
     }
     return 0;
-}
-
-int Worker::size() {
-    return Q.size();
 }
 
 static void* work_wrapper(void *arg) {

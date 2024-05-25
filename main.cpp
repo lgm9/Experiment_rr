@@ -8,8 +8,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <queue>
-#include <mutex>
 #include "worker.h"
+#include "scheduler.h"
 #include "rocksdb/db.h"
 #include "payload.h"
 #define BUF_SIZE 128
@@ -24,16 +24,16 @@ int server_fd, client_fd, rclen;
 char* mainbuf;
 
 Worker **workers;
+Scheduler *main_scheduler;
+pthread_mutex_t scheduler_lock;
 pthread_mutex_t *worker_lock;
+pthread_cond_t scheduler_cond;
 pthread_cond_t* worker_cond;
 
 int num_workers;
 
-std::queue<Payload *> MainQ;
-std::mutex MainQ_lock;
-
 int init_socket() {
-    mainbuf = (char *)malloc(BUF_SIZE);
+    mainbuf = (char *)malloc(BUF_SIZE * sizeof(char));
 
     server_fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
@@ -60,7 +60,7 @@ int init_socket() {
 
 void init_db() {
     options.create_if_missing = true;
-    status = rocksdb::DB::Open(options, "/tmp/testdb_fc", &db);
+    status = rocksdb::DB::Open(options, "/tmp/testdb", &db);
     assert(status.ok());
     printf("Initialized DB\n");
 }
@@ -73,8 +73,8 @@ void init_worker() {
     for(int i = 0 ; i < num_workers ; i++) {
         pthread_mutex_init(&worker_lock[i], NULL);
         pthread_cond_init(&worker_cond[i], NULL);
-        workers[i] = new Worker(i, server_fd, &worker_lock[i], &worker_cond[i], db, &MainQ_lock, &MainQ, num_workers, workers);
-        workers[i] -> init();
+        workers[i] = new Worker(i, server_fd, &worker_lock[i], &worker_cond[i], db);
+        workers[i] -> init(); 
     }
     printf("Initialized workers\n");
 }
@@ -82,9 +82,16 @@ void init_worker() {
 void socket_loop() {
     while(1) {
         rclen = recvfrom(server_fd, mainbuf, BUF_SIZE, 0, (struct sockaddr*)&cli_addr, &addrlen);
-        Payload * pl = new Payload(rclen, mainbuf, cli_addr);
-        MainQ.push(pl);
+        main_scheduler -> push(new Payload(rclen, mainbuf, cli_addr));
+        pthread_cond_signal(&scheduler_cond);
     }
+}
+
+void init_scheduler() {
+    pthread_mutex_init(&scheduler_lock, NULL);
+    pthread_cond_init(&scheduler_cond, NULL);
+    main_scheduler = new Scheduler(workers, num_workers, &scheduler_lock, &scheduler_cond);
+    main_scheduler -> init();
 }
 
 int main(int argc, char *argv[]) {
@@ -100,6 +107,7 @@ int main(int argc, char *argv[]) {
     
     init_db();
     init_worker();
+    init_scheduler();
     socket_loop();
 
     close(server_fd);
